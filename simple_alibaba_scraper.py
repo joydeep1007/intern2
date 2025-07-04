@@ -135,24 +135,202 @@ class SimpleAlibabaRFQScraper:
                                             rfq_data['Inquiry_URL'] = f"https://sourcing.alibaba.com{href}"
                                 break
                     
-                    # Extract buyer information
-                    buyer_patterns = [
-                        r'from[:\s]*([^,\n]+)',
-                        r'buyer[:\s]*([^,\n]+)',
-                        r'company[:\s]*([^,\n]+)'
+                    # Extract buyer information - improved extraction
+                    buyer_name = ''
+                    
+                    # Try to find buyer name in specific elements first
+                    buyer_candidates = [
+                        element.find('span', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
+                        element.find('div', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
+                        element.find('a', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
+                        element.find('p', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
+                        element.find('strong'),
+                        element.find('b')
                     ]
                     
-                    for pattern in buyer_patterns:
-                        match = re.search(pattern, element_text, re.I)
-                        if match:
-                            rfq_data['Buyer_Name'] = match.group(1).strip()[:100]
-                            break
+                    for buyer_elem in buyer_candidates:
+                        if buyer_elem:
+                            buyer_text = self.safe_extract_text(buyer_elem)
+                            # Clean and validate buyer name
+                            if len(buyer_text) > 2 and len(buyer_text) < 100:
+                                # Remove common prefixes
+                                buyer_text = re.sub(r'^(from|buyer|company|contact|supplier|vendor)[:\s]*', '', buyer_text, flags=re.I)
+                                buyer_text = buyer_text.strip()
+                                # Check if it looks like a valid company/person name
+                                if (buyer_text and 
+                                    not buyer_text.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing', 'buyer', 'supplier'] and
+                                    not buyer_text.isdigit() and
+                                    not re.match(r'^\d+\s*(piece|unit|kg|ton)', buyer_text, re.I)):
+                                    buyer_name = buyer_text
+                                    break
                     
-                    # Extract country
-                    country_pattern = r'\b([A-Z]{2,3}|United States|China|India|Germany|France|UK|UAE|Australia|Canada|Brazil|Japan|South Korea)\b'
-                    country_match = re.search(country_pattern, element_text)
-                    if country_match:
-                        rfq_data['Country'] = country_match.group(1)
+                    # If no buyer found in specific elements, try regex patterns on the full text
+                    if not buyer_name:
+                        buyer_patterns = [
+                            r'from[:\s]+([A-Za-z][A-Za-z0-9\s&.,\-]{2,80}?)(?:\s*(?:,|\n|$|UAE|AE|China|India|USA|UK|Germany))',
+                            r'buyer[:\s]+([A-Za-z][A-Za-z0-9\s&.,\-]{2,80}?)(?:\s*(?:,|\n|$|UAE|AE|China|India|USA|UK|Germany))',
+                            r'company[:\s]+([A-Za-z][A-Za-z0-9\s&.,\-]{2,80}?)(?:\s*(?:,|\n|$|UAE|AE|China|India|USA|UK|Germany))',
+                            r'contact[:\s]+([A-Za-z][A-Za-z0-9\s&.,\-]{2,80}?)(?:\s*(?:,|\n|$|UAE|AE|China|India|USA|UK|Germany))',
+                            r'supplier[:\s]+([A-Za-z][A-Za-z0-9\s&.,\-]{2,80}?)(?:\s*(?:,|\n|$|UAE|AE|China|India|USA|UK|Germany))',
+                            r'([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:LLC|Ltd|Inc|Corp|Co\.)',
+                            r'([A-Z][A-Z\s&.,\-]{5,50})\s*(?:TRADING|COMPANY|CORP|LLC|LTD|INC|CO\.)',
+                            r'([A-Za-z][A-Za-z0-9\s&.,\-]{3,50})\s+(?:Trading|Company|Corp|LLC|Ltd|Inc)',
+                            r'([A-Z][A-Z\s]{10,50})',  # All caps company names
+                            r'by\s+([A-Za-z][A-Za-z0-9\s&.,\-]{2,50})',  # "by Company Name"
+                            r'posted\s+by\s+([A-Za-z][A-Za-z0-9\s&.,\-]{2,50})',  # "posted by Company Name"
+                        ]
+                        
+                        for pattern in buyer_patterns:
+                            match = re.search(pattern, element_text, re.I)
+                            if match:
+                                potential_buyer = match.group(1).strip()
+                                # Filter out common false positives
+                                if (potential_buyer and 
+                                    not potential_buyer.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing', 'buyer', 'supplier', 'trading', 'company'] and
+                                    len(potential_buyer) > 2 and 
+                                    not potential_buyer.isdigit() and
+                                    not re.match(r'^\d+\s*(piece|unit|kg|ton)', potential_buyer, re.I)):
+                                    buyer_name = potential_buyer
+                                    break
+                    
+                    # Try to extract from commonly structured text patterns
+                    if not buyer_name:
+                        # Look for patterns like "Company Name - Country" or "Company Name, Country"
+                        text_lines = element_text.split('\n')
+                        for line in text_lines:
+                            line = line.strip()
+                            if len(line) > 5 and len(line) < 100:
+                                # Check if line contains a company-like name
+                                if (any(word in line.lower() for word in ['trading', 'company', 'corp', 'ltd', 'llc', 'inc', 'co.']) or
+                                    re.search(r'[A-Z][A-Z\s]{5,}', line) or  # All caps names
+                                    re.search(r'[A-Z][a-z]+\s+[A-Z][a-z]+', line)):  # Title case names
+                                    
+                                    # Clean the line
+                                    clean_line = re.sub(r'(from|buyer|company|contact)[:\s]*', '', line, flags=re.I)
+                                    clean_line = re.sub(r'\s*[-,]\s*(UAE|AE|China|India|USA|UK|Germany).*', '', clean_line, flags=re.I)
+                                    clean_line = clean_line.strip()
+                                    
+                                    if (clean_line and len(clean_line) > 3 and
+                                        not clean_line.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing']):
+                                        buyer_name = clean_line
+                                        break
+                    
+                    if buyer_name:
+                        rfq_data['Buyer_Name'] = buyer_name[:100]
+                    
+                    # Extract country - improved extraction
+                    country_name = ''
+                    
+                    # Try to find country in specific elements first
+                    country_candidates = [
+                        element.find('span', class_=re.compile(r'country|location|flag|nation', re.I)),
+                        element.find('div', class_=re.compile(r'country|location|flag|nation', re.I)),
+                        element.find('img', {'alt': re.compile(r'country|flag', re.I)}),
+                        element.find('i', class_=re.compile(r'flag|country', re.I)),
+                        element.find('span', string=re.compile(r'\b(UAE|AE|China|India|USA|UK|Germany)\b', re.I)),
+                        element.find('div', string=re.compile(r'\b(UAE|AE|China|India|USA|UK|Germany)\b', re.I))
+                    ]
+                    
+                    for country_elem in country_candidates:
+                        if country_elem:
+                            if country_elem.name == 'img':
+                                # Check alt text or src for country info
+                                alt_text = self.safe_extract_attribute(country_elem, 'alt')
+                                src_text = self.safe_extract_attribute(country_elem, 'src')
+                                country_text = alt_text or src_text
+                            else:
+                                country_text = self.safe_extract_text(country_elem)
+                            
+                            if country_text:
+                                # Extract country from the text
+                                country_match = re.search(r'\b(UAE|AE|United Arab Emirates|China|CN|India|IN|USA|US|United States|UK|United Kingdom|Germany|DE|France|FR|Canada|CA|Australia|AU|Brazil|BR|Japan|JP|South Korea|KR|Italy|IT|Spain|ES|Netherlands|NL|Turkey|TR|Russia|RU|Saudi Arabia|SA|Egypt|EG|Pakistan|PK|Bangladesh|BD|Thailand|TH|Vietnam|VN|Malaysia|MY|Singapore|SG|Indonesia|ID|Philippines|PH|Taiwan|TW|Hong Kong|HK|Mexico|MX|Argentina|AR|Chile|CL|Colombia|CO|Peru|PE|South Africa|ZA|Nigeria|NG|Kenya|KE|Morocco|MA|Algeria|DZ)\b', country_text, re.I)
+                                if country_match:
+                                    country_name = country_match.group(1)
+                                    break
+                    
+                    # If no country found in specific elements, try broader text search
+                    if not country_name:
+                        # Enhanced country patterns with more countries and formats
+                        country_patterns = [
+                            r'\bfrom\s+([A-Z]{2,3})\b',  # "from UAE", "from CN"
+                            r'\blocation[:\s]*([A-Z]{2,3}|[A-Za-z\s]{4,25})',  # Location field
+                            r'\bcountry[:\s]*([A-Z]{2,3}|[A-Za-z\s]{4,25})',  # Country field
+                            r'\b(United Arab Emirates|UAE|AE)\b',
+                            r'\b(China|CN|中国|Chinese)\b',
+                            r'\b(India|IN|भारत|Indian)\b',
+                            r'\b(United States|USA|US|America|American)\b',
+                            r'\b(United Kingdom|UK|GB|Britain|British)\b',
+                            r'\b(Germany|DE|Deutschland|German)\b',
+                            r'\b(France|FR|française|French)\b',
+                            r'\b(Canada|CA|Canadian)\b',
+                            r'\b(Australia|AU|Australian)\b',
+                            r'\b(Brazil|BR|Brasil|Brazilian)\b',
+                            r'\b(Japan|JP|日本|Japanese)\b',
+                            r'\b(South Korea|Korea|KR|한국|Korean)\b',
+                            r'\b(Italy|IT|Italia|Italian)\b',
+                            r'\b(Spain|ES|España|Spanish)\b',
+                            r'\b(Netherlands|NL|Holland|Dutch)\b',
+                            r'\b(Turkey|TR|Türkiye|Turkish)\b',
+                            r'\b(Russia|RU|Россия|Russian)\b',
+                            r'\b(Saudi Arabia|SA|Saudi)\b',
+                            r'\b(Egypt|EG|مصر|Egyptian)\b',
+                            r'\b(Pakistan|PK|پاکستان|Pakistani)\b',
+                            r'\b(Bangladesh|BD|বাংলাদেশ|Bangladeshi)\b',
+                            r'\b(Thailand|TH|ไทย|Thai)\b',
+                            r'\b(Vietnam|VN|Việt Nam|Vietnamese)\b',
+                            r'\b(Malaysia|MY|Malaysian)\b',
+                            r'\b(Singapore|SG|Singaporean)\b',
+                            r'\b(Indonesia|ID|Indonesian)\b',
+                            r'\b(Philippines|PH|Filipino)\b',
+                            r'\b(Taiwan|TW|臺灣|Taiwanese)\b',
+                            r'\b(Hong Kong|HK|香港)\b',
+                            r'\b(Mexico|MX|Mexican)\b',
+                            r'\b(Argentina|AR|Argentinian)\b',
+                            r'\b(Chile|CL|Chilean)\b',
+                            r'\b(Colombia|CO|Colombian)\b',
+                            r'\b(Peru|PE|Peruvian)\b',
+                            r'\b(South Africa|ZA|African)\b',
+                            r'\b(Nigeria|NG|Nigerian)\b',
+                            r'\b(Kenya|KE|Kenyan)\b',
+                            r'\b(Morocco|MA|Moroccan)\b',
+                            r'\b(Algeria|DZ|Algerian)\b'
+                        ]
+                        
+                        for pattern in country_patterns:
+                            match = re.search(pattern, element_text, re.I)
+                            if match:
+                                country_found = match.group(1).strip()
+                                # Normalize common country codes and names
+                                country_mapping = {
+                                    'AE': 'UAE', 'CN': 'China', 'IN': 'India', 'US': 'USA', 
+                                    'GB': 'UK', 'DE': 'Germany', 'FR': 'France', 'CA': 'Canada',
+                                    'AU': 'Australia', 'BR': 'Brazil', 'JP': 'Japan', 'KR': 'South Korea',
+                                    'IT': 'Italy', 'ES': 'Spain', 'NL': 'Netherlands', 'TR': 'Turkey',
+                                    'RU': 'Russia', 'SA': 'Saudi Arabia', 'EG': 'Egypt', 'PK': 'Pakistan',
+                                    'BD': 'Bangladesh', 'TH': 'Thailand', 'VN': 'Vietnam', 'MY': 'Malaysia',
+                                    'SG': 'Singapore', 'ID': 'Indonesia', 'PH': 'Philippines', 'TW': 'Taiwan',
+                                    'HK': 'Hong Kong', 'MX': 'Mexico', 'AR': 'Argentina', 'CL': 'Chile',
+                                    'CO': 'Colombia', 'PE': 'Peru', 'ZA': 'South Africa', 'NG': 'Nigeria',
+                                    'KE': 'Kenya', 'MA': 'Morocco', 'DZ': 'Algeria',
+                                    'Chinese': 'China', 'Indian': 'India', 'American': 'USA',
+                                    'British': 'UK', 'German': 'Germany', 'French': 'France',
+                                    'Canadian': 'Canada', 'Australian': 'Australia', 'Brazilian': 'Brazil',
+                                    'Japanese': 'Japan', 'Korean': 'South Korea', 'Italian': 'Italy',
+                                    'Spanish': 'Spain', 'Dutch': 'Netherlands', 'Turkish': 'Turkey',
+                                    'Russian': 'Russia', 'Saudi': 'Saudi Arabia', 'Egyptian': 'Egypt',
+                                    'Pakistani': 'Pakistan', 'Bangladeshi': 'Bangladesh', 'Thai': 'Thailand',
+                                    'Vietnamese': 'Vietnam', 'Malaysian': 'Malaysia', 'Singaporean': 'Singapore',
+                                    'Indonesian': 'Indonesia', 'Filipino': 'Philippines', 'Taiwanese': 'Taiwan',
+                                    'Mexican': 'Mexico', 'Argentinian': 'Argentina', 'Chilean': 'Chile',
+                                    'Colombian': 'Colombia', 'Peruvian': 'Peru', 'African': 'South Africa',
+                                    'Nigerian': 'Nigeria', 'Kenyan': 'Kenya', 'Moroccan': 'Morocco',
+                                    'Algerian': 'Algeria'
+                                }
+                                country_name = country_mapping.get(country_found, country_found)
+                                break
+                    
+                    if country_name:
+                        rfq_data['Country'] = country_name
                     
                     # Extract quantity
                     quantity_patterns = [
@@ -198,6 +376,9 @@ class SimpleAlibabaRFQScraper:
                         # If no title found, use first 100 chars of text as title
                         if not rfq_data['Title']:
                             rfq_data['Title'] = element_text[:100].replace('\n', ' ').strip()
+                        
+                        # Debug logging for extracted data
+                        logger.debug(f"Extracted RFQ {i+1}: Title='{rfq_data['Title'][:30]}...', Buyer='{rfq_data['Buyer_Name']}', Country='{rfq_data['Country']}', Quantity='{rfq_data['Quantity_Required']}'")
                         
                         rfq_data_list.append(rfq_data)
                         logger.info(f"Extracted RFQ: {rfq_data['Title'][:50]}...")
@@ -316,6 +497,10 @@ class SimpleAlibabaRFQScraper:
 def main():
     """Main function"""
     logger.info("Starting Simple Alibaba RFQ Scraper")
+    
+    # Enable debug logging for more detailed output
+    # Uncomment the line below to see detailed extraction logs
+    # logging.getLogger().setLevel(logging.DEBUG)
     
     scraper = SimpleAlibabaRFQScraper()
     

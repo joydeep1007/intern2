@@ -315,7 +315,7 @@ class SimpleAlibabaRFQScraper:
                             rfq_data['Quantity_Required'] = match.group(0).strip()[:50]
                             break
                     
-                    # Extract time information
+                    # Extract time information and inquiry date
                     time_patterns = [
                         r'(\d+)\s*(hours?|days?|minutes?)\s*(ago|before)',
                         r'(yesterday|today|last week)',
@@ -327,6 +327,59 @@ class SimpleAlibabaRFQScraper:
                         if match:
                             rfq_data['Inquiry_Time'] = match.group(0).strip()
                             break
+                    
+                    # Extract inquiry date - try to find actual dates or convert relative times
+                    inquiry_date = ''
+                    
+                    # Look for specific date formats first
+                    date_patterns = [
+                        r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',  # MM/DD/YYYY or DD/MM/YYYY
+                        r'(\d{2,4}[\/\-]\d{1,2}[\/\-]\d{1,2})',  # YYYY/MM/DD
+                        r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{2,4}',  # Month DD, YYYY
+                        r'\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2,4}',  # DD Month YYYY
+                    ]
+                    
+                    for pattern in date_patterns:
+                        match = re.search(pattern, element_text, re.I)
+                        if match:
+                            inquiry_date = match.group(0).strip()
+                            break
+                    
+                    # If no explicit date found, try to convert relative time to actual date
+                    if not inquiry_date and rfq_data['Inquiry_Time']:
+                        time_text = rfq_data['Inquiry_Time'].lower()
+                        current_date = datetime.now()
+                        
+                        try:
+                            if 'today' in time_text:
+                                inquiry_date = current_date.strftime('%Y-%m-%d')
+                            elif 'yesterday' in time_text:
+                                inquiry_date = (current_date - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+                            elif 'last week' in time_text:
+                                inquiry_date = (current_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+                            elif 'hour' in time_text:
+                                hours_match = re.search(r'(\d+)\s*hour', time_text)
+                                if hours_match:
+                                    hours_ago = int(hours_match.group(1))
+                                    inquiry_date = (current_date - pd.Timedelta(hours=hours_ago)).strftime('%Y-%m-%d')
+                            elif 'day' in time_text:
+                                days_match = re.search(r'(\d+)\s*day', time_text)
+                                if days_match:
+                                    days_ago = int(days_match.group(1))
+                                    inquiry_date = (current_date - pd.Timedelta(days=days_ago)).strftime('%Y-%m-%d')
+                            elif 'minute' in time_text:
+                                # For minutes ago, use today's date
+                                inquiry_date = current_date.strftime('%Y-%m-%d')
+                        except Exception as e:
+                            logger.debug(f"Error converting relative time to date: {e}")
+                            # If conversion fails, use today's date as fallback
+                            inquiry_date = current_date.strftime('%Y-%m-%d')
+                    
+                    # If still no date, use current date as fallback
+                    if not inquiry_date:
+                        inquiry_date = datetime.now().strftime('%Y-%m-%d')
+                    
+                    rfq_data['Inquiry_Date'] = inquiry_date
                     
                     # Extract quotes left - improved extraction for Alibaba RFQ structure
                     quotes_left = ''
@@ -500,6 +553,7 @@ class SimpleAlibabaRFQScraper:
             print(f"Records with countries: {len(df[df['Country'] != ''])}")
             print(f"Records with quantities: {len(df[df['Quantity_Required'] != ''])}")
             print(f"Records with quotes left: {len(df[df['Quotes_Left'] != ''])}")
+            print(f"Records with inquiry dates: {len(df[df['Inquiry_Date'] != ''])}")
             print(f"Output saved to: {filename}")
             
             return True

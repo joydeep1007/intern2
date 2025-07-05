@@ -218,89 +218,58 @@ class SimpleAlibabaRFQScraper:
                     if buyer_name:
                         rfq_data['Buyer_Name'] = buyer_name[:100]
                     
-                    # Extract country - improved extraction
+                    # Extract country - using simplified pattern from alternative scraper
                     country_name = ''
                     
-                    # Try to find country in specific elements first
+                    # Try to find country in specific Alibaba RFQ elements first
                     country_candidates = [
-                        element.find('span', class_=re.compile(r'country|location|flag|nation', re.I)),
-                        element.find('div', class_=re.compile(r'country|location|flag|nation', re.I)),
-                        element.find('img', {'alt': re.compile(r'country|flag', re.I)}),
-                        element.find('i', class_=re.compile(r'flag|country', re.I)),
-                        element.find('span', string=re.compile(r'\b(UAE|AE|China|India|USA|UK|Germany)\b', re.I)),
-                        element.find('div', string=re.compile(r'\b(UAE|AE|China|India|USA|UK|Germany)\b', re.I))
+                        # Primary: Look for the specific Alibaba RFQ country div
+                        element.find('div', class_=re.compile(r'brh-rfq-item__country', re.I)),
+                        element.find('div', class_=re.compile(r'rfq.*country', re.I)),
+                        element.find('div', class_=re.compile(r'country', re.I)),
+                        # Secondary: Look for flag images with country info
+                        element.find('img', class_=re.compile(r'country.*flag|flag.*country', re.I)),
+                        element.find('img', {'title': re.compile(r'United Arab Emirates|China|India|USA|UK|Germany|France|Canada|Australia|Brazil|Japan', re.I)}),
+                        element.find('img', {'alt': re.compile(r'United Arab Emirates|China|India|USA|UK|Germany|France|Canada|Australia|Brazil|Japan', re.I)}),
                     ]
                     
                     for country_elem in country_candidates:
                         if country_elem:
+                            # Handle different element types
                             if country_elem.name == 'img':
-                                # Check alt text or src for country info
+                                # Extract from image alt or title attributes
                                 alt_text = self.safe_extract_attribute(country_elem, 'alt')
-                                src_text = self.safe_extract_attribute(country_elem, 'src')
-                                country_text = alt_text or src_text
-                            else:
-                                country_text = self.safe_extract_text(country_elem)
-                            
-                            if country_text:
-                                # Extract country from the text
-                                country_match = re.search(r'\b(UAE|AE|United Arab Emirates|China|CN|India|IN|USA|US|United States|UK|United Kingdom|Germany|DE|France|FR|Canada|CA|Australia|AU|Brazil|BR|Japan|JP|South Korea|KR|Italy|IT|Spain|ES|Netherlands|NL|Turkey|TR|Russia|RU|Saudi Arabia|SA|Egypt|EG|Pakistan|PK|Bangladesh|BD|Thailand|TH|Vietnam|VN|Malaysia|MY|Singapore|SG|Indonesia|ID|Philippines|PH|Taiwan|TW|Hong Kong|HK|Mexico|MX|Argentina|AR|Chile|CL|Colombia|CO|Peru|PE|South Africa|ZA|Nigeria|NG|Kenya|KE|Morocco|MA|Algeria|DZ)\b', country_text, re.I)
-                                if country_match:
-                                    country_name = country_match.group(1)
+                                title_text = self.safe_extract_attribute(country_elem, 'title')
+                                country_text = title_text or alt_text
+                                if country_text:
+                                    country_name = country_text.strip()
                                     break
+                            else:
+                                # Extract text from div/span elements
+                                country_text = self.safe_extract_text(country_elem)
+                                if country_text:
+                                    # Clean up the text (remove "Posted in:" and other labels)
+                                    clean_text = re.sub(r'posted\s+in\s*:?\s*', '', country_text, flags=re.I)
+                                    clean_text = re.sub(r'country\s*:?\s*', '', clean_text, flags=re.I)
+                                    clean_text = re.sub(r'location\s*:?\s*', '', clean_text, flags=re.I)
+                                    clean_text = clean_text.strip()
+                                    
+                                    # If cleaned text looks like a country, use it
+                                    if len(clean_text) > 2 and len(clean_text) < 50 and not re.search(r'\d', clean_text):
+                                        country_name = clean_text
+                                        break
                     
-                    # If no country found in specific elements, try broader text search
+                    # If no country found in specific elements, use simplified pattern matching
                     if not country_name:
-                        # Enhanced country patterns with more countries and formats
+                        # Simplified country pattern from alternative scraper
                         country_patterns = [
-                            r'\bfrom\s+([A-Z]{2,3})\b',  # "from UAE", "from CN"
-                            r'\blocation[:\s]*([A-Z]{2,3}|[A-Za-z\s]{4,25})',  # Location field
-                            r'\bcountry[:\s]*([A-Z]{2,3}|[A-Za-z\s]{4,25})',  # Country field
-                            r'\b(United Arab Emirates|UAE|AE)\b',
-                            r'\b(China|CN|中国|Chinese)\b',
-                            r'\b(India|IN|भारत|Indian)\b',
-                            r'\b(United States|USA|US|America|American)\b',
-                            r'\b(United Kingdom|UK|GB|Britain|British)\b',
-                            r'\b(Germany|DE|Deutschland|German)\b',
-                            r'\b(France|FR|française|French)\b',
-                            r'\b(Canada|CA|Canadian)\b',
-                            r'\b(Australia|AU|Australian)\b',
-                            r'\b(Brazil|BR|Brasil|Brazilian)\b',
-                            r'\b(Japan|JP|日本|Japanese)\b',
-                            r'\b(South Korea|Korea|KR|한국|Korean)\b',
-                            r'\b(Italy|IT|Italia|Italian)\b',
-                            r'\b(Spain|ES|España|Spanish)\b',
-                            r'\b(Netherlands|NL|Holland|Dutch)\b',
-                            r'\b(Turkey|TR|Türkiye|Turkish)\b',
-                            r'\b(Russia|RU|Россия|Russian)\b',
-                            r'\b(Saudi Arabia|SA|Saudi)\b',
-                            r'\b(Egypt|EG|مصر|Egyptian)\b',
-                            r'\b(Pakistan|PK|پاکستان|Pakistani)\b',
-                            r'\b(Bangladesh|BD|বাংলাদেশ|Bangladeshi)\b',
-                            r'\b(Thailand|TH|ไทย|Thai)\b',
-                            r'\b(Vietnam|VN|Việt Nam|Vietnamese)\b',
-                            r'\b(Malaysia|MY|Malaysian)\b',
-                            r'\b(Singapore|SG|Singaporean)\b',
-                            r'\b(Indonesia|ID|Indonesian)\b',
-                            r'\b(Philippines|PH|Filipino)\b',
-                            r'\b(Taiwan|TW|臺灣|Taiwanese)\b',
-                            r'\b(Hong Kong|HK|香港)\b',
-                            r'\b(Mexico|MX|Mexican)\b',
-                            r'\b(Argentina|AR|Argentinian)\b',
-                            r'\b(Chile|CL|Chilean)\b',
-                            r'\b(Colombia|CO|Colombian)\b',
-                            r'\b(Peru|PE|Peruvian)\b',
-                            r'\b(South Africa|ZA|African)\b',
-                            r'\b(Nigeria|NG|Nigerian)\b',
-                            r'\b(Kenya|KE|Kenyan)\b',
-                            r'\b(Morocco|MA|Moroccan)\b',
-                            r'\b(Algeria|DZ|Algerian)\b'
+                            r'\b(UAE|AE|United Arab Emirates|China|CN|India|IN|USA|US|UK|Germany|DE|France|FR|Canada|CA|Australia|AU|Brazil|BR|Japan|JP|South Korea|KR|Italy|IT|Spain|ES|Netherlands|NL|Turkey|TR|Russia|RU|Saudi Arabia|SA|Egypt|EG|Pakistan|PK|Bangladesh|BD|Thailand|TH|Vietnam|VN|Malaysia|MY|Singapore|SG|Indonesia|ID|Philippines|PH|Taiwan|TW|Hong Kong|HK)\b'
                         ]
                         
                         for pattern in country_patterns:
                             match = re.search(pattern, element_text, re.I)
                             if match:
-                                country_found = match.group(1).strip()
-                                # Normalize common country codes and names
+                                country_found = match.group(1).upper()
                                 country_mapping = {
                                     'AE': 'UAE', 'CN': 'China', 'IN': 'India', 'US': 'USA', 
                                     'GB': 'UK', 'DE': 'Germany', 'FR': 'France', 'CA': 'Canada',
@@ -309,22 +278,7 @@ class SimpleAlibabaRFQScraper:
                                     'RU': 'Russia', 'SA': 'Saudi Arabia', 'EG': 'Egypt', 'PK': 'Pakistan',
                                     'BD': 'Bangladesh', 'TH': 'Thailand', 'VN': 'Vietnam', 'MY': 'Malaysia',
                                     'SG': 'Singapore', 'ID': 'Indonesia', 'PH': 'Philippines', 'TW': 'Taiwan',
-                                    'HK': 'Hong Kong', 'MX': 'Mexico', 'AR': 'Argentina', 'CL': 'Chile',
-                                    'CO': 'Colombia', 'PE': 'Peru', 'ZA': 'South Africa', 'NG': 'Nigeria',
-                                    'KE': 'Kenya', 'MA': 'Morocco', 'DZ': 'Algeria',
-                                    'Chinese': 'China', 'Indian': 'India', 'American': 'USA',
-                                    'British': 'UK', 'German': 'Germany', 'French': 'France',
-                                    'Canadian': 'Canada', 'Australian': 'Australia', 'Brazilian': 'Brazil',
-                                    'Japanese': 'Japan', 'Korean': 'South Korea', 'Italian': 'Italy',
-                                    'Spanish': 'Spain', 'Dutch': 'Netherlands', 'Turkish': 'Turkey',
-                                    'Russian': 'Russia', 'Saudi': 'Saudi Arabia', 'Egyptian': 'Egypt',
-                                    'Pakistani': 'Pakistan', 'Bangladeshi': 'Bangladesh', 'Thai': 'Thailand',
-                                    'Vietnamese': 'Vietnam', 'Malaysian': 'Malaysia', 'Singaporean': 'Singapore',
-                                    'Indonesian': 'Indonesia', 'Filipino': 'Philippines', 'Taiwanese': 'Taiwan',
-                                    'Mexican': 'Mexico', 'Argentinian': 'Argentina', 'Chilean': 'Chile',
-                                    'Colombian': 'Colombia', 'Peruvian': 'Peru', 'African': 'South Africa',
-                                    'Nigerian': 'Nigeria', 'Kenyan': 'Kenya', 'Moroccan': 'Morocco',
-                                    'Algerian': 'Algeria'
+                                    'HK': 'Hong Kong'
                                 }
                                 country_name = country_mapping.get(country_found, country_found)
                                 break

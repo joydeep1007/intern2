@@ -135,11 +135,15 @@ class SimpleAlibabaRFQScraper:
                                             rfq_data['Inquiry_URL'] = f"https://sourcing.alibaba.com{href}"
                                 break
                     
-                    # Extract buyer information - improved extraction
+                    # Extract buyer information - improved extraction with Alibaba-specific structure
                     buyer_name = ''
                     
-                    # Try to find buyer name in specific elements first
+                    # Try to find buyer name in specific Alibaba elements first
                     buyer_candidates = [
+                        # Primary: Look for the specific Alibaba username div with class "text"
+                        element.find('div', class_='text'),
+                        element.find('div', class_=re.compile(r'^text$', re.I)),
+                        # Secondary: Look for other buyer-related elements
                         element.find('span', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
                         element.find('div', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
                         element.find('a', class_=re.compile(r'buyer|company|name|contact|supplier|vendor', re.I)),
@@ -156,13 +160,25 @@ class SimpleAlibabaRFQScraper:
                                 # Remove common prefixes
                                 buyer_text = re.sub(r'^(from|buyer|company|contact|supplier|vendor)[:\s]*', '', buyer_text, flags=re.I)
                                 buyer_text = buyer_text.strip()
-                                # Check if it looks like a valid company/person name
-                                if (buyer_text and 
-                                    not buyer_text.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing', 'buyer', 'supplier'] and
-                                    not buyer_text.isdigit() and
-                                    not re.match(r'^\d+\s*(piece|unit|kg|ton)', buyer_text, re.I)):
-                                    buyer_name = buyer_text
-                                    break
+                                
+                                # For div with class="text", accept names more liberally (likely usernames)
+                                if buyer_elem.get('class') and 'text' in buyer_elem.get('class', []):
+                                    # This is likely a username div, be more permissive
+                                    if (buyer_text and 
+                                        not buyer_text.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing'] and
+                                        not buyer_text.isdigit() and
+                                        not re.match(r'^\d+\s*(piece|unit|kg|ton|hour|day|minute)', buyer_text, re.I) and
+                                        re.search(r'[A-Za-z]{2,}', buyer_text)):  # Must contain at least 2 letters
+                                        buyer_name = buyer_text
+                                        break
+                                else:
+                                    # Standard validation for other elements
+                                    if (buyer_text and 
+                                        not buyer_text.lower() in ['quote', 'request', 'inquiry', 'rfq', 'alibaba', 'sourcing', 'buyer', 'supplier'] and
+                                        not buyer_text.isdigit() and
+                                        not re.match(r'^\d+\s*(piece|unit|kg|ton)', buyer_text, re.I)):
+                                        buyer_name = buyer_text
+                                        break
                     
                     # If no buyer found in specific elements, try regex patterns on the full text
                     if not buyer_name:
@@ -312,10 +328,53 @@ class SimpleAlibabaRFQScraper:
                             rfq_data['Inquiry_Time'] = match.group(0).strip()
                             break
                     
-                    # Extract quotes left
-                    quotes_match = re.search(r'(\d+)\s*quotes?\s*left', element_text, re.I)
-                    if quotes_match:
-                        rfq_data['Quotes_Left'] = quotes_match.group(1)
+                    # Extract quotes left - improved extraction for Alibaba RFQ structure
+                    quotes_left = ''
+                    
+                    # Try to find quotes in specific Alibaba RFQ elements first
+                    quotes_candidates = [
+                        # Primary: Look for the specific Alibaba RFQ quotes div
+                        element.find('div', class_=re.compile(r'brh-rfq-item__quote-left', re.I)),
+                        element.find('div', class_=re.compile(r'quote.*left|quotes.*left', re.I)),
+                        element.find('span', class_=re.compile(r'quote.*left|quotes.*left', re.I)),
+                        # Secondary: Look for elements containing "quotes left" text
+                        element.find('div', string=re.compile(r'quotes?\s+left', re.I)),
+                        element.find('span', string=re.compile(r'quotes?\s+left', re.I))
+                    ]
+                    
+                    for quotes_elem in quotes_candidates:
+                        if quotes_elem:
+                            quotes_text = self.safe_extract_text(quotes_elem)
+                            if quotes_text:
+                                # Extract number from "Quotes Left 9" or similar patterns
+                                quotes_match = re.search(r'quotes?\s+left\s+(\d+)', quotes_text, re.I)
+                                if not quotes_match:
+                                    # Try to find number in nested span
+                                    span_elem = quotes_elem.find('span')
+                                    if span_elem:
+                                        span_text = self.safe_extract_text(span_elem)
+                                        if span_text and span_text.isdigit():
+                                            quotes_left = span_text
+                                            break
+                                    # Try to extract just the number from the text
+                                    number_match = re.search(r'(\d+)', quotes_text)
+                                    if number_match:
+                                        quotes_left = number_match.group(1)
+                                        break
+                                else:
+                                    quotes_left = quotes_match.group(1)
+                                    break
+                    
+                    # If no quotes found in specific elements, use regex on full text
+                    if not quotes_left:
+                        quotes_match = re.search(r'quotes?\s+left\s+(\d+)', element_text, re.I)
+                        if not quotes_match:
+                            quotes_match = re.search(r'(\d+)\s*quotes?\s*left', element_text, re.I)
+                        if quotes_match:
+                            quotes_left = quotes_match.group(1)
+                    
+                    if quotes_left:
+                        rfq_data['Quotes_Left'] = quotes_left
                     
                     # Look for verification badges
                     element_text_lower = element_text.lower()
@@ -440,6 +499,7 @@ class SimpleAlibabaRFQScraper:
             print(f"Records with buyer names: {len(df[df['Buyer_Name'] != ''])}")
             print(f"Records with countries: {len(df[df['Country'] != ''])}")
             print(f"Records with quantities: {len(df[df['Quantity_Required'] != ''])}")
+            print(f"Records with quotes left: {len(df[df['Quotes_Left'] != ''])}")
             print(f"Output saved to: {filename}")
             
             return True
